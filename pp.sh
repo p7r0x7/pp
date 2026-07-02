@@ -12,33 +12,30 @@
 cli() {
     help() {
         printf '%s\n' \
-            'Usage: pp.sh <video> [-y4m|-mkv|-nut|-av1an] [-crop w:h] [-trim start:end] [-ffmpeg path]' \
+            'Usage: pp.sh <video> [-y4m|-yuv|-mkv|-nut|-avi|-av1an] [-crop w:h] [-trim start:end] [-ffmpeg path]' \
             '    *) Operates on the first video in the file and its metadata.' \
             '    *) For -av1an, use "-f -vf $(pp video.mp4 -av1an ...)".' \
-            '    *) Optimally handles every format accepted by FFmpeg.' \
             '    *) Results are streamed to /dev/stdout.'
         exit $1
     }
+    [ $# -gt 0 ] || help 0; set -exu; umask 0022
 
-    [ $# -gt 0 ] || help 0; set -eu; umask 0022; video="$1" format=yuv4mpegpipe crop="" trim=""; shift
-
+    video="$1" format=yuv4mpegpipe crop='' trim='' ffmpeg=''; shift
     while [ $# -gt 0 ]; do
         case "$1" in
             -ffmpeg) [ $# -ge 2 ] || help 1; ffmpeg="$2 -hide_banner -hwaccel auto"; shift 2 ;;
             -trim) [ $# -ge 2 ] || help 1; trim=$2; shift 2 ;;
             -crop) [ $# -ge 2 ] || help 1; crop=$2; shift 2 ;;
+            -av1an|-nut|-avi) format=${1#-}; shift ;;
             -y4m) format=yuv4mpegpipe; shift ;;
             -mkv) format=matroska; shift ;;
-            -av1an) format=av1an; shift ;;
-            -nut) format=nut; shift ;;
+            -yuv) format=rawvideo; shift ;;
             *) help 1 ;;
         esac
     done
-
-    if [ "$ffmpeg" = '' ]; then ffmpeg="$(command -v ffmpeg) -hide_banner -hwaccel auto"; fi
-
+    [ "$ffmpeg" = '' ] && ffmpeg="$(command -v ffmpeg) -hide_banner -hwaccel auto"
     placebo="libplacebo=dithering=none" ffprobe="$(command -v ffprobe) -v error"
-    if [ ! -f /tmp/ffmpeg_fmts.txt ]; then $ffmpeg -pix_fmts >/tmp/ffmpeg_fmts.txt 2>&1 & fi
+    [ -f /tmp/ffmpeg_fmts.txt ] || $ffmpeg -pix_fmts >/tmp/ffmpeg_fmts.txt 2>&1 &
 }
 
 pp() {
@@ -61,22 +58,22 @@ pp() {
         fmts=$(awk '$3 == 2 || $3 == 4 { printf "|%s", $2 }' /tmp/ffmpeg_fmts.txt)
         case "$fmt" in ${fmts#|}) return 0 ;; *) return 1 ;; esac
     }
-    if isalpha "$video"; then fmt1=yuva444p16le fmt2=yuva420p10le; else fmt1=yuv444p16le fmt2=yuv420p10le; fi
+    isalpha "$video" && fmt1=yuva444p16le fmt2=yuva420p10le || fmt1=yuv444p16le fmt2=yuv420p10le
 
     detelecine= deinterlace= #"bwdif=mode=0:deint=1,"
 
-    if [ "$crop" != '' ]; then crop="crop=$crop,"; fi; if [ "$trim" != '' ]; then trim="trim=$trim,"; fi
+    [ "$crop" != '' ] && crop="crop=$crop,"; [ "$trim" != '' ] && trim="trim=$trim,"
 
     if false; then
         decimate="mpdecimate=hi=256:lo=64:frac=0.1,"
     else
         decimate="
-            freezedetect=n=0:d=,
+            freezedetect=n=0:d=$(awk -v r="$fps" 'BEGIN { split(r, a, "/"); printf "%.9f\n", a[1]/a[2] }'),
             metadata=add:lavfi.freezedetect.freeze_start:n/a,
             metadata=select:lavfi.freezedetect.freeze_start:n/a:same_str,"
     fi
 
-    filterchain="'$(printf %s "
+    filterchain="$(printf %s "
         setparams=colorspace=$space:color_trc=$txfr:color_primaries=$primes:range=$range,
         $detelecine$deinterlace
         $trim$crop
@@ -89,11 +86,11 @@ pp() {
 
         zscale=m=$space:t=$txfr:p=$primes:r=tv:f=lanczos:param_a=16,format=$fmt2,
         setparams=colorspace=$space:color_trc=$txfr:color_primaries=$primes:range=tv,
-        fps=fps=$fps:eof_action=pass,settb=${fps#*/}/${fps%%/*},setpts=PTS-STARTPTS" | tr -d ' ')' -fps_mode cfr"
+        fps=fps=$fps:eof_action=pass,settb=${fps#*/}/${fps%%/*},setpts=PTS-STARTPTS" | tr -d '[:space:]') -fps_mode cfr"
 
     if [ $format = av1an ]; then printf %s "$filterchain"; return; fi
 
-    $ffmpeg -i "$video" -map 0:v -vf "$filterchain" -c:v rawvideo -strict -1 -f $format -
+    $ffmpeg -i "$video" -map 0:v -vf $filterchain -c:v rawvideo -strict -1 -f $format -
 }
 
 cli "$@"; pp
