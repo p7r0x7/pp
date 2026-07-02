@@ -23,7 +23,7 @@ cli() {
     video="$1" format=yuv4mpegpipe crop='' trim='' ffmpeg=''; shift
     while [ $# -gt 0 ]; do
         case "$1" in
-            -ffmpeg) [ $# -ge 2 ] || help 1; ffmpeg="$2 -hide_banner -hwaccel auto"; shift 2 ;;
+            -ffmpeg) [ $# -ge 2 ] || help 1; ffmpeg="$2 -v error -hwaccel auto"; shift 2 ;;
             -trim) [ $# -ge 2 ] || help 1; trim=$2; shift 2 ;;
             -crop) [ $# -ge 2 ] || help 1; crop=$2; shift 2 ;;
             -av1an|-nut) format=${1#-}; shift ;;
@@ -70,27 +70,31 @@ pp() {
         decimate="mpdecimate=hi=256:lo=64:frac=0.1,"
     else
         decimate="
-            freezedetect=n=0.1:d=0,
+            freezedetect=n=0.2:d=0,
             metadata=add:lavfi.freezedetect.freeze_start:n/a,
             metadata=select:lavfi.freezedetect.freeze_start:n/a:same_str,"
     fi
+    printf %s "$space $txfr $primes $range\n" >/dev/stderr
 
     filterchain="$(printf %s "
         $detelecine$deinterlace$trim$crop
 
         setparams=colorspace=$space:color_trc=$txfr:color_primaries=$primes:range=$range,
-        zscale=m=ictcp:t=smpte2084:p=bt2020:r=pc:f=lanczos:param_a=16,format=$fmt1,
+        zscale=m=ictcp:t=smpte2084:p=bt2020:r=pc:f=lanczos:param_a=3,format=$fmt1,
 
-        bilateral,
-        libplacebo=dithering=none:deband=1:deband_radius=32:deband_iterations=8:deband_threshold=1.5:deband_grain=0,
+        bilateral=0.5,
         setparams=colorspace=ictcp:color_trc=smpte2084:color_primaries=bt2020:range=pc,
-        zscale=m=$space:t=$txfr:p=$primes:r=tv:f=lanczos:param_a=16:d=error_diffusion,format=$fmt2,
+        libplacebo=
+            deband=1:deband_radius=16:deband_iterations=4:deband_threshold=2:deband_grain=0:
+            extra_opts='downscaler=custom\\:downscaler_preset=lanczos\\:downscaler_radius=3':
+            colorspace=$space:color_trc=$txfr:color_primaries=$primes:range=tv:
+            disable_linear=1:skip_aa=1:sigmoid=0:dithering=blue:format=$fmt2,
 
         ${decimate}fps=$fps:eof_action=pass,settb=${fps#*/}/${fps%%/*},setpts=PTS-STARTPTS" | \
             tr -d '[:space:]') -fps_mode cfr -r $fps"
 
     if [ $format = av1an ]; then printf %s "$filterchain"; return; fi
-    $ffmpeg -i "$video" -map 0:v -vf $filterchain -c:v rawvideo -strict -1 -f $format -
+    $ffmpeg -loglevel verbose -i "$video" -map 0:v -vf $filterchain -c:v rawvideo -strict -1 -f $format -
 }
 
 cli "$@"; pp
